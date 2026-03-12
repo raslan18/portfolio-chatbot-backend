@@ -3,85 +3,118 @@ import { createClient } from "@supabase/supabase-js"
 
 export default async function handler(req, res) {
 
+  /* ---------------- CORS ---------------- */
+
+  res.setHeader("Access-Control-Allow-Origin", "*")
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end()
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" })
   }
 
-  const { message, history = [] } = req.body
+  try {
 
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-  })
+    const { message, history = [] } = req.body
 
-  const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_ANON_KEY
-  )
+    /* ---------------- OpenAI ---------------- */
 
-  /* Embed the user question */
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    })
 
-  const embeddingResponse =
-    await openai.embeddings.create({
+    /* ---------------- Supabase ---------------- */
+
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY
+    )
+
+    /* ---------------- Create embedding ---------------- */
+
+    const embeddingResponse = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: message
     })
 
-  const [{ embedding }] = embeddingResponse.data
+    const [{ embedding }] = embeddingResponse.data
 
-  /* Retrieve relevant portfolio data */
+    /* ---------------- Vector search ---------------- */
 
-  const { data: matches } =
-    await supabase.rpc("match_embeddings", {
-      query_embedding: embedding,
-      match_threshold: 0.78,
-      match_count: 5
-    })
+    const { data: matches } = await supabase.rpc(
+      "match_embeddings",
+      {
+        query_embedding: embedding,
+        match_threshold: 0.78,
+        match_count: 5
+      }
+    )
 
-  const context =
-    matches?.map(m => m.content).join("\n") || ""
+    const context =
+      matches?.map((m) => m.content).join("\n") || ""
 
-  /* Build conversation */
+    /* ---------------- Conversation memory ---------------- */
 
-  const messages = [
+    const messages = [
 
-    {
-      role: "system",
-      content: `
+      {
+        role: "system",
+        content: `
 You are RAI, the AI assistant inside the portfolio of product designer Muhammed Raslan.
 
-Answer questions about Raslan's:
-- projects
-- design process
-- experience
-- tools
-- impact
+Your job is to help recruiters understand Raslan’s:
 
-Use the provided context when relevant.
+• projects
+• design process
+• experience
+• skills
+• product thinking
+• impact
 
-Be concise and clear because recruiters are reading your answers.
+Always answer clearly and concisely.
+
+Use the provided portfolio context when relevant.
 `
-    },
+      },
 
-    ...history.map(m => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: m.text
-    })),
+      ...history.map((m) => ({
+        role: m.role === "user" ? "user" : "assistant",
+        content: m.text
+      })),
 
-    {
-      role: "user",
-      content: `Context:\n${context}\n\nQuestion: ${message}`
-    }
-  ]
+      {
+        role: "user",
+        content: `Context:\n${context}\n\nQuestion:\n${message}`
+      }
+    ]
 
-  /* Ask OpenAI */
+    /* ---------------- Ask OpenAI ---------------- */
 
-  const completion =
-    await openai.chat.completions.create({
+    const completion = await openai.chat.completions.create({
       model: "gpt-4.1",
       messages
     })
 
-  return res.status(200).json({
-    reply: completion.choices[0].message.content
-  })
+    const reply =
+      completion.choices[0].message.content
+
+    /* ---------------- Response ---------------- */
+
+    return res.status(200).json({
+      reply
+    })
+
+  } catch (error) {
+
+    console.error("Chat API error:", error)
+
+    return res.status(500).json({
+      error: "Internal server error"
+    })
+
+  }
 }
